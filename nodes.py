@@ -1383,8 +1383,8 @@ class ConvertNormals:
         return {
             "required": {
                 "normals": ("IMAGE",),
-                "input_mode": (["BAE", "MiDaS", "Standard"],),
-                "output_mode": (["BAE", "MiDaS", "Standard"],),
+                "input_mode": (["BAE", "MiDaS", "Standard", "DirectX"],),
+                "output_mode": (["BAE", "MiDaS", "Standard", "DirectX"],),
                 "scale_XY": ("FLOAT",{"default": 1, "min": 0, "max": 100, "step": 0.001}),
                 "normalize": ("BOOLEAN", {"default": True}),
                 "fix_black": ("BOOLEAN", {"default": True}),
@@ -1400,38 +1400,56 @@ class ConvertNormals:
     CATEGORY = "image/filters"
 
     def convert_normals(self, normals, input_mode, output_mode, scale_XY, normalize, fix_black, optional_fill=None):
-        t = normals.detach().clone()
-        
-        if input_mode == "BAE":
-            t[:,:,:,0] = 1 - t[:,:,:,0] # invert R
-        elif input_mode == "MiDaS":
-            t[:,:,:,:3] = torch.stack([1 - t[:,:,:,2], t[:,:,:,1], t[:,:,:,0]], dim=3) # BGR -> RGB and invert R
-        
-        if fix_black:
-            key = torch.clamp(1 - t[:,:,:,2] * 2, min=0, max=1)
-            if optional_fill == None:
-                t[:,:,:,0] += key * 0.5
-                t[:,:,:,1] += key * 0.5
-                t[:,:,:,2] += key
-            else:
-                fill = optional_fill.detach().clone()
-                if fill.shape[1:3] != t.shape[1:3]:
-                    fill = torch.nn.functional.interpolate(fill.movedim(-1,1), size=(t.shape[1], t.shape[2]), mode='bilinear').movedim(1,-1)
-                if fill.shape[0] != t.shape[0]:
-                    fill = fill[0].unsqueeze(0).expand(t.shape[0], -1, -1, -1)
-                t[:,:,:,:3] += fill[:,:,:,:3] * key.unsqueeze(3).expand(-1, -1, -1, 3)
-        
-        t[:,:,:,:2] = (t[:,:,:,:2] - 0.5) * scale_XY + 0.5
-        
-        if normalize:
-            t[:,:,:,:3] = torch.nn.functional.normalize(t[:,:,:,:3] * 2 - 1, dim=3) / 2 + 0.5
-        
-        if output_mode == "BAE":
-            t[:,:,:,0] = 1 - t[:,:,:,0] # invert R
-        elif output_mode == "MiDaS":
-            t[:,:,:,:3] = torch.stack([t[:,:,:,2], t[:,:,:,1], 1 - t[:,:,:,0]], dim=3) # invert R and BGR -> RGB
-        
-        return (t,)
+        try:
+            t = normals.detach().clone()
+            
+            if input_mode == "BAE":
+                t[:,:,:,0] = 1 - t[:,:,:,0] # invert R
+            elif input_mode == "MiDaS":
+                t[:,:,:,:3] = torch.stack([1 - t[:,:,:,2], t[:,:,:,1], t[:,:,:,0]], dim=3) # BGR -> RGB and invert R
+            elif input_mode == "DirectX":
+                t[:,:,:,1] = 1 - t[:,:,:,1] # invert G
+            
+            if fix_black:
+                key = torch.clamp(1 - t[:,:,:,2] * 2, min=0, max=1)
+                if optional_fill is None:
+                    t[:,:,:,0] += key * 0.5
+                    t[:,:,:,1] += key * 0.5
+                    t[:,:,:,2] += key
+                else:
+                    fill = optional_fill.detach().clone()
+                    if fill.shape[1:3] != t.shape[1:3]:
+                        fill = torch.nn.functional.interpolate(fill.movedim(-1,1), size=(t.shape[1], t.shape[2]), mode='bilinear').movedim(1,-1)
+                    if fill.shape[0] != t.shape[0]:
+                        fill = fill[0].unsqueeze(0).expand(t.shape[0], -1, -1, -1)
+                    t[:,:,:,:3] += fill[:,:,:,:3] * key.unsqueeze(3).expand(-1, -1, -1, 3)
+            
+            t[:,:,:,:2] = (t[:,:,:,:2] - 0.5) * scale_XY + 0.5
+            
+            if normalize:
+                # Transform to [-1, 1] range
+                t_norm = t[:,:,:,:3] * 2 - 1
+                
+                # Calculate the length of each vector
+                lengths = torch.sqrt(torch.sum(t_norm**2, dim=3, keepdim=True))
+                
+                # Avoid division by zero
+                lengths = torch.clamp(lengths, min=1e-6)
+                
+                # Normalize each vector to unit length
+                t_norm = t_norm / lengths
+                
+                # Transform back to [0, 1] range
+                t[:,:,:,:3] = (t_norm + 1) / 2
+            
+            if output_mode == "BAE":
+                t[:,:,:,0] = 1 - t[:,:,:,0] # invert R
+            elif output_mode == "MiDaS":
+                t[:,:,:,:3] = torch.stack([t[:,:,:,2], t[:,:,:,1], 1 - t[:,:,:,0]], dim=3) # invert R and BGR -> RGB
+            elif output_mode == "DirectX":
+                t[:,:,:,1] = 1 - t[:,:,:,1] # invert G
+            
+            return (t,)
 
 class BatchAverageImage:
     @classmethod
